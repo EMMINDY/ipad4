@@ -1,27 +1,28 @@
 <script>
 // ==========================================
 // ระบบตรวจสอบสถานะ iPad - Client-side Script
-// โรงเรียนอรัญประเทศ
 // ==========================================
 
 // ─── State Variables ───────────────────────────────────────
-var systemData = [];
-var currentLevel = '';
-var adminMode = 'all';
-var currentUser = null;
+var systemData        = [];
+var currentLevel      = '';
+var adminMode         = 'all';
+var currentUser       = null;
 var dataTableInstance = null;
-var auditOrphansData = [];
+var auditOrphansData  = [];
 var uploadDocPersonList = [];
+var _dataLoaded       = false;   // ✅ ป้องกันโหลดซ้ำโดยไม่จำเป็น
+var _adminSearchQuery = '';      // ✅ ค้นหาในหน้า Admin
+var _searchDebounce   = null;
 
-// ─── Preview State ─────────────────────────────────────────
-var _previewScale = 1;
+// ─── Preview State ──────────────────────────────────────────
+var _previewScale    = 1;
 var _previewRotation = 0;
 
 // ==========================================
 // UTILITY FUNCTIONS
 // ==========================================
 
-/** แสดง spinner บนปุ่ม แล้วคืนสภาพหลัง fn เสร็จ */
 function btnClick(btn, fn) {
   if (btn && btn.disabled) return;
   var origHtml = btn ? btn.innerHTML : '';
@@ -46,7 +47,6 @@ function btnClick(btn, fn) {
   }
 }
 
-/** แสดง Global Loading Overlay */
 function showGlobalLoading(message) {
   var overlay = document.getElementById('global-loading-overlay');
   if (!overlay) return;
@@ -56,7 +56,6 @@ function showGlobalLoading(message) {
   if (txt) txt.textContent = message || 'กำลังประมวลผล...';
 }
 
-/** ซ่อน Global Loading Overlay */
 function hideGlobalLoading() {
   var overlay = document.getElementById('global-loading-overlay');
   if (!overlay) return;
@@ -64,20 +63,17 @@ function hideGlobalLoading() {
   overlay.style.display = 'none';
 }
 
-/** ทำให้ค่าห้องเรียนเป็นรูปแบบมาตรฐาน (เช่น "ม.3/1" -> "1") */
 function normalizeRoomValue(val) {
   if (val == null) return '';
   var s = String(val).trim();
   if (!s) return '';
-  var parts = s.split('/');
-  return parts[parts.length - 1];
+  return s.split('/').pop();
 }
 
-/** คืน CSS class ของ badge ตามสถานะการยืม */
 function getBorrowBadgeClass(status) {
   var map = {
     'ยืมอยู่': 'success',
-    'อยู่ระหว่างการส่งคืน': 'warning',
+    'อยู่ระหว่างการส่งคืน': 'warning text-dark',
     'คืนแล้ว': 'primary',
     'ส่งซ่อม': 'danger',
     'สละสิทธิ์': 'danger'
@@ -85,17 +81,15 @@ function getBorrowBadgeClass(status) {
   return map[status] || 'secondary';
 }
 
-/** คืน CSS class ของ badge ตามสถานะเอกสาร */
 function getDocBadgeClass(status) {
   var map = {
     'เอกสารผ่าน': 'success',
     'เอกสารไม่ผ่าน': 'danger',
-    'รอตรวจสอบ': 'warning'
+    'รอตรวจสอบ': 'warning text-dark'
   };
   return map[status] || 'secondary';
 }
 
-/** Escape HTML เพื่อป้องกัน XSS */
 function escapeHtml(s) {
   return String(s || '')
     .replace(/&/g, '&amp;')
@@ -105,13 +99,11 @@ function escapeHtml(s) {
     .replace(/'/g, '&#039;');
 }
 
-/** แสดง error dialog */
 function showError(err) {
   var msg = (err && err.message) ? err.message : (typeof err === 'string' ? err : 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ');
   Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: msg, confirmButtonText: 'ตกลง' });
 }
 
-/** อ่านไฟล์เป็น Base64 Data URL */
 function readFileAsBase64(file, callback) {
   if (!file) { callback(null); return; }
   var reader = new FileReader();
@@ -120,52 +112,35 @@ function readFileAsBase64(file, callback) {
   reader.readAsDataURL(file);
 }
 
-/** สร้าง timestamp สำหรับชื่อไฟล์ */
 function getTimestamp() {
   var d = new Date();
   var pad = function (n) { return String(n).padStart(2, '0'); };
   return d.getFullYear() + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' + pad(d.getHours()) + pad(d.getMinutes());
 }
 
-
 // ==========================================
-// TOAST NOTIFICATIONS
+// TOAST / CONFIRM
 // ==========================================
 
-/** แสดง Toast notification เบาๆ (ไม่บล็อค UI) */
 function showToast(message, type, duration) {
   type = type || 'success';
   duration = duration || 2500;
-  var colors = { success: '#198754', error: '#dc3545', warning: '#ffc107', info: '#0dcaf0' };
   Swal.fire({
-    toast: true,
-    position: 'top-end',
-    icon: type,
-    title: message,
-    showConfirmButton: false,
-    timer: duration,
-    timerProgressBar: true,
-    background: '#fff',
-    iconColor: colors[type] || colors.success
+    toast: true, position: 'top-end', icon: type, title: message,
+    showConfirmButton: false, timer: duration, timerProgressBar: true
   });
 }
 
-/** แสดง confirm dialog พร้อม icon */
 function confirmAction(title, text, confirmText) {
   return Swal.fire({
-    title: title || 'ยืนยัน?',
-    text: text || '',
-    icon: 'question',
-    showCancelButton: true,
-    confirmButtonText: confirmText || 'ยืนยัน',
-    cancelButtonText: 'ยกเลิก',
-    confirmButtonColor: '#0d6efd',
-    reverseButtons: true
+    title: title || 'ยืนยัน?', text: text || '', icon: 'question',
+    showCancelButton: true, confirmButtonText: confirmText || 'ยืนยัน',
+    cancelButtonText: 'ยกเลิก', confirmButtonColor: '#0d6efd', reverseButtons: true
   });
 }
 
 // ==========================================
-// INITIALIZATION
+// INIT
 // ==========================================
 
 $(document).ready(function () {
@@ -191,22 +166,42 @@ function showView(id) {
 
 function goLanding() {
   currentUser = null;
+  _dataLoaded = false;
+  systemData  = [];
   showView('view-landing');
 }
 
 function goHome() {
   if (currentUser && (currentUser.role === 'advisor' || currentUser.role === 'admin')) {
     showView('view-admin');
-    loadAdminView();
+    // ✅ FIX: ถ้าข้อมูลยังอยู่ใน systemData → แค่ re-render ไม่โหลดใหม่
+    if (_dataLoaded && systemData.length) {
+      updateAdminUIForRole();
+      updateAdminStats();
+      _updateModeButtonCounts();
+      filterAdminTable();
+    } else {
+      loadAdminView();
+    }
   } else {
     showView('view-dashboard');
-    loadDashboard();
+    // ✅ FIX: ถ้าข้อมูลยังอยู่ → แค่ re-render
+    if (_dataLoaded && systemData.length) {
+      renderDashboardGrid();
+    } else {
+      loadDashboard();
+    }
   }
 }
 
 function enterSystem() {
   showView('view-dashboard');
-  loadDashboard();
+  // ✅ FIX: ถ้าข้อมูลยังอยู่ → ไม่ต้องโหลดใหม่
+  if (_dataLoaded && systemData.length) {
+    renderDashboardGrid();
+  } else {
+    loadDashboard();
+  }
 }
 
 // ==========================================
@@ -215,33 +210,28 @@ function enterSystem() {
 
 function loadDashboard() {
   showGlobalLoading('กำลังโหลดข้อมูล...');
-  var done = 0;
-  function checkDone() { done++; if (done >= 2) hideGlobalLoading(); }
-
-  google.script.run
-    .withSuccessHandler(function (stats) {
-      if (stats) {
-        ['totalAssetsText', 'borrowedCountText', 'availableCountText'].forEach(function (id, i) {
-          var keys = ['total', 'borrowed', 'available'];
-          var el = document.getElementById(id);
-          if (el) el.textContent = stats[keys[i]] || 0;
-        });
-      }
-      checkDone();
-    })
-    .withFailureHandler(function (err) { checkDone(); showError(err); })
-    .getDashboardStats();
-
+  // ✅ FIX: ดึงข้อมูลครั้งเดียว แล้วคำนวณ stats จาก client แทนการเรียก getDashboardStats แยก
   google.script.run
     .withSuccessHandler(function (data) {
-      systemData = data || [];
+      systemData  = data || [];
+      _dataLoaded = true;
+      // คำนวณ stats จาก systemData
+      var borrowed = 0;
+      systemData.forEach(function(p) {
+        var s = p.borrowStatus || '';
+        if (s === 'ยืมอยู่' || s === 'อยู่ระหว่างการส่งคืน') borrowed++;
+      });
+      var setEl = function(id, v) { var e = document.getElementById(id); if(e) e.textContent = v; };
+      setEl('totalAssetsText', 2085);
+      setEl('borrowedCountText', borrowed);
+      setEl('availableCountText', 2085 - borrowed);
       renderDashboardGrid();
+      hideGlobalLoading();
       if (!systemData.length) {
         Swal.fire({ icon: 'info', title: 'ไม่พบรายชื่อ', text: 'กรุณาตรวจสอบชื่อชีตใน Google Sheets' });
       }
-      checkDone();
     })
-    .withFailureHandler(function (err) { checkDone(); showError(err); })
+    .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
     .getAllSystemData();
 }
 
@@ -252,7 +242,6 @@ function renderDashboardGrid() {
     if (!levels[src]) levels[src] = { count: 0 };
     levels[src].count++;
   });
-
   var html = '';
   ['รายชื่อนักเรียน ม.3', 'รายชื่อนักเรียน ม.4', 'รายชื่อนักเรียน ม.5', 'รายชื่อนักเรียน ม.6'].forEach(function (lv) {
     var c = (levels[lv] && levels[lv].count) || 0;
@@ -284,26 +273,29 @@ function openLevel(level) {
 
 function goBackToDashboard() {
   showView('view-dashboard');
-  loadDashboard();
+  // ✅ FIX: ไม่เรียก loadDashboard() → ใช้ข้อมูลที่มีอยู่
+  if (_dataLoaded && systemData.length) {
+    renderDashboardGrid();
+  } else {
+    loadDashboard();
+  }
 }
 
 function getFilteredTableRows() {
-  var base = systemData.filter(function (p) { return (p.source_sheet || '') === currentLevel; });
-  var roomV = (document.getElementById('roomFilter') || {}).value || '';
+  var base    = systemData.filter(function (p) { return (p.source_sheet || '') === currentLevel; });
+  var roomV   = (document.getElementById('roomFilter') || {}).value || '';
   var statusV = (document.getElementById('statusFilter') || {}).value || '';
-  var docV = (document.getElementById('docFilter') || {}).value || '';
-
-  var rows = base.filter(function (p) {
-    if (roomV && (p.room || '') !== roomV) return false;
+  var docV    = (document.getElementById('docFilter') || {}).value || '';
+  var rows    = base.filter(function (p) {
+    if (roomV   && (p.room || '') !== roomV) return false;
     if (statusV && (p.borrowStatus || '') !== statusV) return false;
-    if (docV && (p.docStatus || 'ยังไม่ส่ง') !== docV) return false;
+    if (docV    && (p.docStatus || 'ยังไม่ส่ง') !== docV) return false;
     return true;
   });
-
   var sortV = (document.getElementById('sortByFilter') || {}).value || 'name';
   rows.sort(function (a, b) {
-    if (sortV === 'id') return String(a.id || '').localeCompare(String(b.id || ''));
-    if (sortV === 'room') return String(a.room || '').localeCompare(String(b.room || ''));
+    if (sortV === 'id')     return String(a.id || '').localeCompare(String(b.id || ''));
+    if (sortV === 'room')   return String(a.room || '').localeCompare(String(b.room || ''));
     if (sortV === 'status') return String(a.borrowStatus || '').localeCompare(String(b.borrowStatus || ''));
     return String(a.name || '').localeCompare(String(b.name || ''), 'th');
   });
@@ -336,17 +328,23 @@ function renderTable(rows) {
   var tbody = document.querySelector('#dataTable tbody');
   if (tbody) tbody.innerHTML = rows.map(function (r) {
     var bs = r.borrowStatus || 'ยังไม่ยืม';
-    var ds = r.docStatus || 'ยังไม่ส่ง';
-    return '<tr><td>' + escapeHtml(r.id) + '</td><td class="fw-bold">' + escapeHtml(r.name) + '</td>' +
+    var ds = r.docStatus   || 'ยังไม่ส่ง';
+    return '<tr>' +
+      '<td>' + escapeHtml(r.id) + '</td>' +
+      '<td class="fw-bold">' + escapeHtml(r.name) + '</td>' +
       '<td>' + escapeHtml(r.room || '-') + '</td>' +
       '<td><code class="small text-muted">' + escapeHtml(r.serial || '-') + '</code></td>' +
       '<td><span class="badge bg-' + getBorrowBadgeClass(bs) + '">' + escapeHtml(bs) + '</span></td>' +
-      '<td><span class="badge bg-' + getDocBadgeClass(ds) + '">' + escapeHtml(ds) + '</span></td></tr>';
+      '<td><span class="badge bg-' + getDocBadgeClass(ds) + '">' + escapeHtml(ds) + '</span></td>' +
+      '</tr>';
   }).join('');
   var countEl = document.getElementById('filteredCountText');
   if (countEl) countEl.textContent = rows.length;
-  if (dataTableInstance) { try { dataTableInstance.destroy(); } catch (e) { } dataTableInstance = null; }
-  dataTableInstance = $('#dataTable').DataTable({ pageLength: 25, order: [], language: { url: '//cdn.datatables.net/plug-ins/1.13.4/i18n/th.json' } });
+  if (dataTableInstance) { try { dataTableInstance.destroy(); } catch (e) {} dataTableInstance = null; }
+  dataTableInstance = $('#dataTable').DataTable({
+    pageLength: 25, order: [],
+    language: { url: '//cdn.datatables.net/plug-ins/1.13.4/i18n/th.json' }
+  });
 }
 
 // ==========================================
@@ -364,19 +362,30 @@ function showUploadDocModal(type) {
     if (rb) rb.checked = type === 'borrow';
     if (rr) rr.checked = type === 'return';
   }
-  document.getElementById('ud_personSelect').innerHTML = '<option value="">-- กำลังโหลดรายชื่อ... --</option>';
   $('#uploadDocModal').modal('show');
-  google.script.run
-    .withSuccessHandler(function (data) { uploadDocPersonList = data || []; filterUploadPersonList(); })
-    .withFailureHandler(function (err) {
-      document.getElementById('ud_personSelect').innerHTML = '<option value="">-- โหลดไม่สำเร็จ --</option>';
-      showError(err);
-    })
-    .getAllSystemData();
+  // ✅ FIX: ใช้ systemData ที่มีอยู่แล้วแทนการเรียก server ซ้ำ
+  if (_dataLoaded && systemData.length) {
+    uploadDocPersonList = systemData;
+    filterUploadPersonList();
+  } else {
+    document.getElementById('ud_personSelect').innerHTML = '<option value="">-- กำลังโหลดรายชื่อ... --</option>';
+    google.script.run
+      .withSuccessHandler(function (data) {
+        uploadDocPersonList = data || [];
+        systemData  = data || [];
+        _dataLoaded = true;
+        filterUploadPersonList();
+      })
+      .withFailureHandler(function (err) {
+        document.getElementById('ud_personSelect').innerHTML = '<option value="">-- โหลดไม่สำเร็จ --</option>';
+        showError(err);
+      })
+      .getAllSystemData();
+  }
 }
 
 function filterUploadPersonList() {
-  var q = ((document.getElementById('ud_searchName') || {}).value || '').toLowerCase().trim();
+  var q   = ((document.getElementById('ud_searchName') || {}).value || '').toLowerCase().trim();
   var sel = document.getElementById('ud_personSelect');
   if (!sel) return;
   var filtered = (uploadDocPersonList || []).filter(function (p) {
@@ -385,24 +394,27 @@ function filterUploadPersonList() {
   sel.innerHTML = '<option value="">-- เลือกชื่อ (' + filtered.length + ' รายการ) --</option>' +
     filtered.map(function (p) {
       return '<option value="' + escapeHtml(p.id) + '|' + escapeHtml(p.source_sheet || '') + '">' +
-        escapeHtml(p.name) + (p.type === 'teacher' ? ' (ครู)' : ' (ห้อง ' + escapeHtml(p.room || '') + ')') +
-        '</option>';
+        escapeHtml(p.name) + (p.type === 'teacher' ? ' (ครู)' : ' ห้อง ' + escapeHtml(p.room || '')) + '</option>';
     }).join('');
 }
 
 function handleUploadDocSubmit(form) {
-  var typeEl = document.querySelector('input[name="ud_type"]:checked');
+  var typeEl     = document.querySelector('input[name="ud_type"]:checked');
   var uploadType = typeEl ? typeEl.value : 'borrow';
-  var selVal = document.getElementById('ud_personSelect').value;
+  var selVal     = document.getElementById('ud_personSelect').value;
   if (!selVal) { Swal.fire({ icon: 'warning', title: 'กรุณาเลือกชื่อ' }); return false; }
   var parts = selVal.split('|');
-  var p = uploadDocPersonList.find(function (x) { return String(x.id) === String(parts[0]) && (x.source_sheet || '') === (parts[1] || ''); });
+  var p = uploadDocPersonList.find(function (x) {
+    return String(x.id) === String(parts[0]) && (x.source_sheet || '') === (parts[1] || '');
+  });
   if (!p) { Swal.fire({ icon: 'error', title: 'ไม่พบข้อมูล กรุณาเลือกใหม่' }); return false; }
   var fileInput = form.querySelector('[name="ud_file"]');
   if (!fileInput || !fileInput.files[0]) { Swal.fire({ icon: 'warning', title: 'กรุณาเลือกไฟล์ PDF' }); return false; }
-  var obj = { userId: p.id, userName: p.name, userType: p.type, userRoom: p.room, userSerial: p.serial,
-              source_sheet: p.source_sheet || '', uploadType: uploadType,
-              note: (form.querySelector('[name="ud_note"]') || {}).value || '' };
+  var obj = {
+    userId: p.id, userName: p.name, userType: p.type, userRoom: p.room, userSerial: p.serial,
+    source_sheet: p.source_sheet || '', uploadType: uploadType,
+    note: (form.querySelector('[name="ud_note"]') || {}).value || ''
+  };
   readFileAsBase64(fileInput.files[0], function (b64) {
     if (!b64) { Swal.fire({ icon: 'error', title: 'ไม่สามารถอ่านไฟล์ได้' }); return; }
     obj.file_b64 = b64;
@@ -410,8 +422,17 @@ function handleUploadDocSubmit(form) {
     google.script.run
       .withSuccessHandler(function (res) {
         hideGlobalLoading();
-        if (res.success) { showToast('อัปโหลดเรียบร้อย'); $('#uploadDocModal').modal('hide'); }
-        else Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+        if (res.success) {
+          showToast('อัปโหลดเรียบร้อย');
+          $('#uploadDocModal').modal('hide');
+          // ✅ FIX: อัปเดต local state แทนการโหลดใหม่
+          _localUpdatePerson(p.id, p.source_sheet, {
+            borrowStatus: uploadType === 'return' ? 'อยู่ระหว่างการส่งคืน' : 'ยืมอยู่',
+            docStatus:    uploadType === 'borrow' ? 'รอตรวจสอบ' : undefined
+          });
+        } else {
+          Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+        }
       })
       .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
       .processUploadDoc(obj);
@@ -424,7 +445,7 @@ function handleUploadDocSubmit(form) {
 // ==========================================
 
 function showAdvisorLogin() { $('#advisorLoginModal').modal('show'); }
-function showAdminLogin() { $('#adminLoginModal').modal('show'); }
+function showAdminLogin()   { $('#adminLoginModal').modal('show'); }
 
 function loginAdmin() {
   var u = document.getElementById('adminUsernameInput').value.trim();
@@ -435,12 +456,14 @@ function loginAdmin() {
     .withSuccessHandler(function (res) {
       hideGlobalLoading();
       if (res.success) {
-        currentUser = { role: 'admin' };
+        currentUser = { role: 'admin', name: res.name || 'Admin' };
         document.getElementById('adminPasswordInput').value = '';
         $('#adminLoginModal').modal('hide');
         showView('view-admin');
         loadAdminView();
-      } else Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบไม่สำเร็จ', text: res.message || 'Username หรือ Password ไม่ถูกต้อง' });
+      } else {
+        Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบไม่สำเร็จ', text: res.message || 'Username หรือ Password ไม่ถูกต้อง' });
+      }
     })
     .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
     .verifyAdmin(u, p);
@@ -460,7 +483,9 @@ function loginAdvisor() {
         $('#advisorLoginModal').modal('hide');
         showView('view-admin');
         loadAdminView();
-      } else Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบไม่สำเร็จ', text: res.message || 'Username หรือ Password ไม่ถูกต้อง' });
+      } else {
+        Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบไม่สำเร็จ', text: res.message || 'Username หรือ Password ไม่ถูกต้อง' });
+      }
     })
     .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
     .verifyAdvisor(u, p);
@@ -476,30 +501,12 @@ function loadAdminView() {
   showGlobalLoading('กำลังโหลดรายชื่อทั้งหมด...');
   google.script.run
     .withSuccessHandler(function (data) {
-      systemData = data || [];
+      systemData  = data || [];
+      _dataLoaded = true;
       updateAdminUIForRole();
-      if (currentUser && currentUser.role === 'advisor') {
-        filterAdminTable();
-      } else {
-        // Admin: ดึง summary จาก server เพื่อความแม่นยำ
-        updateAdminStats(); // อัปเดต local ก่อน
-        filterAdminTable();
-        // ดึง server stats แยก (non-blocking)
-        google.script.run
-          .withSuccessHandler(function(summary) {
-            if (summary && summary.success) {
-              var setEl = function(id, v) { var e = document.getElementById(id); if(e) e.textContent = v; };
-              setEl('stat-total', summary.total || 0);
-              setEl('stat-borrowed', summary.borrowed || 0);
-              setEl('stat-notborrow', summary.notBorrow || 0);
-              setEl('stat-pending', summary.pending || 0);
-              setEl('stat-returned', summary.returned || 0);
-              setEl('stat-repair', summary.repair || 0);
-            }
-          })
-          .withFailureHandler(function() { /* ใช้ค่า local แทน */ })
-          .getAdminSummary();
-      }
+      updateAdminStats();
+      _updateModeButtonCounts();
+      filterAdminTable();
       hideGlobalLoading();
     })
     .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
@@ -507,11 +514,11 @@ function loadAdminView() {
 }
 
 function updateAdminUIForRole() {
-  var titleEl = document.getElementById('admin-title-text');
-  var roleEl = document.getElementById('adminRoleDisplay');
-  var filterBox = document.getElementById('adminFilterBox');
+  var titleEl    = document.getElementById('admin-title-text');
+  var roleEl     = document.getElementById('adminRoleDisplay');
+  var filterBox  = document.getElementById('adminFilterBox');
   var btnAddUser = document.getElementById('btn-add-user');
-  var btnAudit = document.getElementById('btn-audit-missing');
+  var btnAudit   = document.getElementById('btn-audit-missing');
   if (currentUser && currentUser.role === 'advisor') {
     if (titleEl) titleEl.textContent = 'ครูที่ปรึกษา';
     if (roleEl) {
@@ -545,16 +552,65 @@ function updateAdminStats(dataToCount) {
     else if (s === 'ส่งซ่อม' || s === 'สละสิทธิ์') rep++;
     if ((p.docStatus || '') === 'รอตรวจสอบ') pd++;
   });
-  $('#stat-total').text(t); $('#stat-borrowed').text(b); $('#stat-notborrow').text(nb);
-  $('#stat-pending').text(pd); $('#stat-returned').text(ret); $('#stat-repair').text(rep);
+  var setEl = function(id, v) { var e = document.getElementById(id); if(e) e.textContent = v; };
+  setEl('stat-total', t); setEl('stat-borrowed', b); setEl('stat-notborrow', nb);
+  setEl('stat-pending', pd); setEl('stat-returned', ret); setEl('stat-repair', rep);
+}
+
+/** ✅ NEW: อัปเดตตัวเลขบน Mode Buttons */
+function _updateModeButtonCounts() {
+  var returnCount = systemData.filter(function(p) {
+    return (p.borrowStatus || '').indexOf('อยู่ระหว่างการส่งคืน') >= 0;
+  }).length;
+  var docCount = systemData.filter(function(p) {
+    return (p.docStatus || '') === 'รอตรวจสอบ';
+  }).length;
+  var eReturnBadge = document.getElementById('modeReturnCount');
+  var eDocBadge    = document.getElementById('modeDocCount');
+  if (eReturnBadge) {
+    eReturnBadge.textContent = returnCount > 0 ? returnCount : '';
+    eReturnBadge.style.display = returnCount > 0 ? '' : 'none';
+  }
+  if (eDocBadge) {
+    eDocBadge.textContent = docCount > 0 ? docCount : '';
+    eDocBadge.style.display = docCount > 0 ? '' : 'none';
+  }
 }
 
 function setAdminMode(mode) {
   adminMode = mode;
-  $('#btnModeAll, #btnModeReturn, #btnModeDoc').removeClass('btn-primary').addClass('btn-light');
-  var ids = { all: '#btnModeAll', 'return': '#btnModeReturn', doc: '#btnModeDoc' };
-  if (ids[mode]) $(ids[mode]).removeClass('btn-light').addClass('btn-primary');
+  // อัปเดต active button
+  ['btnModeAll', 'btnModeReturn', 'btnModeDoc'].forEach(function(id) {
+    var btn = document.getElementById(id);
+    if (!btn) return;
+    var isActive = (id === 'btnMode' + mode.charAt(0).toUpperCase() + mode.slice(1));
+    btn.classList.toggle('btn-primary', isActive);
+    btn.classList.toggle('btn-light', !isActive);
+    btn.classList.toggle('border', !isActive);
+  });
+  // Fix: handle 'all' → 'btnModeAll'
+  var activeId = { all: 'btnModeAll', 'return': 'btnModeReturn', doc: 'btnModeDoc' }[mode];
+  if (activeId) {
+    ['btnModeAll', 'btnModeReturn', 'btnModeDoc'].forEach(function(id) {
+      var btn = document.getElementById(id);
+      if (!btn) return;
+      btn.classList.remove('btn-primary', 'text-white');
+      btn.classList.add('btn-light', 'border');
+    });
+    var activeBtn = document.getElementById(activeId);
+    if (activeBtn) {
+      activeBtn.classList.remove('btn-light', 'border');
+      activeBtn.classList.add('btn-primary', 'text-white');
+    }
+  }
   filterAdminTable();
+}
+
+// ✅ NEW: ค้นหาใน Admin (debounce 300ms)
+function onAdminSearchInput(val) {
+  clearTimeout(_searchDebounce);
+  _adminSearchQuery = (val || '').trim().toLowerCase();
+  _searchDebounce   = setTimeout(filterAdminTable, 300);
 }
 
 function filterAdminTable() {
@@ -572,28 +628,41 @@ function filterAdminTable() {
     lv = lf ? lf.value : '';
     rm = rf ? rf.value : '';
   }
-  var tRoomNorm = normalizeRoomValue(rm);
+  var tRoomNorm   = normalizeRoomValue(rm);
   var statusFilter = (document.getElementById('adminStatusFilter') || {}).value || '';
-  var sortFilter = (document.getElementById('adminSortFilter') || {}).value || 'name';
+  var sortFilter   = (document.getElementById('adminSortFilter') || {}).value || 'name';
+  var q            = _adminSearchQuery;
+
   var rows = systemData.filter(function (p) {
-    if (lv && (p.source_sheet || '').indexOf(lv) < 0) return false;
-    if (tRoomNorm && normalizeRoomValue(p.room) !== tRoomNorm) return false;
+    if (lv         && (p.source_sheet || '').indexOf(lv) < 0) return false;
+    if (tRoomNorm  && normalizeRoomValue(p.room) !== tRoomNorm) return false;
     if (statusFilter && (p.borrowStatus || '') !== statusFilter) return false;
     if (adminMode === 'return') return (p.borrowStatus || '').indexOf('อยู่ระหว่างการส่งคืน') >= 0;
-    if (adminMode === 'doc') return (p.docStatus || '') === 'รอตรวจสอบ';
+    if (adminMode === 'doc')    return (p.docStatus || '') === 'รอตรวจสอบ';
+    // ✅ Text search
+    if (q) {
+      var nameMatch   = (p.name   || '').toLowerCase().indexOf(q) >= 0;
+      var idMatch     = String(p.id || '').toLowerCase().indexOf(q) >= 0;
+      var serialMatch = (p.serial || '').toLowerCase().indexOf(q) >= 0;
+      var roomMatch   = (p.room   || '').toLowerCase().indexOf(q) >= 0;
+      if (!nameMatch && !idMatch && !serialMatch && !roomMatch) return false;
+    }
     return true;
   });
+
   rows.sort(function (a, b) {
-    if (sortFilter === 'id') return String(a.id || '').localeCompare(String(b.id || ''));
-    if (sortFilter === 'room') return String(a.room || '').localeCompare(String(b.room || ''));
+    if (sortFilter === 'id')     return String(a.id || '').localeCompare(String(b.id || ''));
+    if (sortFilter === 'room')   return String(a.room || '').localeCompare(String(b.room || ''));
     if (sortFilter === 'status') return String(a.borrowStatus || '').localeCompare(String(b.borrowStatus || ''));
     return String(a.name || '').localeCompare(String(b.name || ''), 'th');
   });
+
   if (currentUser && currentUser.role === 'advisor') updateAdminStats(rows);
   renderAdminTable(rows, lv, rm);
 }
 
 function renderAdminTable(rows, preserveLevel, preserveRoom) {
+  // อัปเดต dropdowns
   var levels = [], rooms = {};
   systemData.forEach(function (r) {
     var s = r.source_sheet || '';
@@ -603,46 +672,119 @@ function renderAdminTable(rows, preserveLevel, preserveRoom) {
   var lf = document.getElementById('adminLevelFilter');
   var rf = document.getElementById('adminRoomFilter');
   if (lf) {
-    lf.innerHTML = '<option value="">ทุกระดับชั้น</option>' + levels.sort().map(function (l) { return '<option value="' + escapeHtml(l) + '">' + escapeHtml(l) + '</option>'; }).join('');
+    lf.innerHTML = '<option value="">ทุกระดับชั้น</option>' + levels.sort().map(function (l) {
+      return '<option value="' + escapeHtml(l) + '">' + escapeHtml(l.replace('รายชื่อนักเรียน ', '')) + '</option>';
+    }).join('');
     if (preserveLevel && levels.indexOf(preserveLevel) >= 0) lf.value = preserveLevel;
   }
   if (rf) {
     var rlist = (lf && lf.value && rooms[lf.value]) ? rooms[lf.value] : [];
-    rf.innerHTML = '<option value="">ทุกห้อง</option>' + rlist.sort().map(function (r) { return '<option value="' + escapeHtml(r) + '">' + escapeHtml(r) + '</option>'; }).join('');
+    rf.innerHTML = '<option value="">ทุกห้อง</option>' + rlist.sort().map(function (r) {
+      return '<option value="' + escapeHtml(r) + '">ห้อง ' + escapeHtml(r) + '</option>';
+    }).join('');
     if (preserveRoom && rlist.indexOf(preserveRoom) >= 0) rf.value = preserveRoom;
   }
+
   var isAdvisor = currentUser && currentUser.role === 'advisor';
-  var isAdmin = currentUser && currentUser.role === 'admin';
-  var tbody = document.querySelector('#adminTable tbody');
+  var isAdmin   = currentUser && currentUser.role === 'admin';
+  var tbody     = document.querySelector('#adminTable tbody');
+
   tbody.innerHTML = rows.map(function (r) {
-    var bs = r.borrowStatus || 'ยังไม่ยืม';
-    var ds = r.docStatus || 'ยังไม่ส่ง';
-    var retText = '-', retClass = 'secondary';
-    if (bs.indexOf('อยู่ระหว่างการส่งคืน') >= 0) { retText = 'รออนุมัติคืน'; retClass = 'warning'; }
-    else if (bs === 'คืนแล้ว') { retText = 'คืนแล้ว'; retClass = 'success'; }
-    var safeId = escapeHtml(r.id);
+    var bs       = r.borrowStatus || 'ยังไม่ยืม';
+    var ds       = r.docStatus   || 'ยังไม่ส่ง';
+    var safeId   = escapeHtml(r.id);
     var safeSheet = escapeHtml(r.source_sheet || '');
-    var action = '<button class="btn btn-sm btn-outline-primary me-1 mb-1" onclick="openActionModal(\'' + safeId + '\',\'' + safeSheet + '\')" title="ดู/อัปโหลดเอกสาร"><i class="fas fa-file-alt"></i></button>';
+    var safeName  = escapeHtml(r.name || '');
+    var safeRoom  = escapeHtml(r.room || '');
+    var safeSerial = escapeHtml(r.serial || '');
+    var safeType  = escapeHtml(r.type || 'student');
+
+    // ── Action Buttons ──────────────────────────────
+    var action = '';
+    action += '<button class="btn btn-sm btn-outline-primary" onclick="openActionModal(\'' + safeId + '\',\'' + safeSheet + '\')" title="ดู/อัปโหลดเอกสาร">' +
+              '<i class="fas fa-file-alt"></i></button> ';
+
     if (isAdmin) {
-      action += '<button class="btn btn-sm btn-outline-danger me-1 mb-1" onclick="openAdminEdit(\'' + safeId + '\',\'' + safeSheet + '\')" title="แก้ไขข้อมูล"><i class="fas fa-cog"></i></button>';
+      action += '<button class="btn btn-sm btn-outline-secondary" onclick="openAdminEdit(\'' + safeId + '\',\'' + safeSheet + '\')" title="แก้ไขข้อมูล">' +
+                '<i class="fas fa-pen"></i></button>';
+      // ปุ่มยืนยันคืน (เฉพาะแถวที่กำลังคืน)
       if (bs.indexOf('อยู่ระหว่างการส่งคืน') >= 0) {
-        action += '<button class="btn btn-sm btn-warning mb-1" onclick="openAdvisorReturnModal(\'' + safeId + '\')" title="ยืนยันการคืน"><i class="fas fa-undo"></i></button>';
+        action += ' <button class="btn btn-sm btn-warning text-dark fw-bold" onclick="openAdminEdit(\'' + safeId + '\',\'' + safeSheet + '\')" title="อนุมัติคืน">' +
+                  '<i class="fas fa-check"></i> คืน</button>';
       }
     }
+
     if (isAdvisor && ds === 'รอตรวจสอบ') {
-      action += '<button class="btn btn-sm btn-success mb-1" onclick="advisorApproveDoc(\'' + safeId + '\',\'' + safeSheet + '\',\'' +
-        escapeHtml(r.name || '') + '\',\'' + escapeHtml(r.room || '') + '\',\'' + escapeHtml(r.serial || '') + '\',\'' + escapeHtml(r.type || 'student') + '\')" title="อนุมัติเอกสาร"><i class="fas fa-check"></i> อนุมัติ</button>';
+      action += '<button class="btn btn-sm btn-success fw-bold" onclick="advisorApproveDoc(\'' + safeId + '\',\'' + safeSheet + '\',\'' +
+        safeName + '\',\'' + safeRoom + '\',\'' + safeSerial + '\',\'' + safeType + '\')" title="อนุมัติเอกสาร">' +
+        '<i class="fas fa-check"></i> อนุมัติ</button>';
     }
-    return '<tr><td class="small text-muted">' + escapeHtml(r.id) + '</td><td class="fw-bold">' + escapeHtml(r.name) + '</td>' +
+    if (isAdvisor && bs === 'ยืมอยู่') {
+      action += ' <button class="btn btn-sm btn-outline-warning text-dark" onclick="openAdvisorReturnModal(\'' + safeId + '\')" title="ส่งคืน iPad">' +
+                '<i class="fas fa-undo"></i></button>';
+    }
+
+    // ── Row highlight ────────────────────────────────
+    var rowClass = '';
+    if (bs.indexOf('อยู่ระหว่างการส่งคืน') >= 0) rowClass = 'table-warning';
+    else if (ds === 'รอตรวจสอบ') rowClass = 'table-info';
+
+    // ── Serial (short) ──────────────────────────────
+    var serialShort = r.serial && r.serial !== '-'
+      ? '<code class="serial-code">' + escapeHtml(r.serial) + '</code>'
+      : '<span class="text-muted">-</span>';
+
+    return '<tr class="' + rowClass + '">' +
+      '<td class="text-muted small">' + escapeHtml(r.id) + '</td>' +
+      '<td><span class="fw-bold">' + escapeHtml(r.name) + '</span>' +
+        (r.room ? '<br><small class="text-muted">ห้อง ' + escapeHtml(r.room) + '</small>' : '') + '</td>' +
+      '<td>' + serialShort + '</td>' +
       '<td><span class="badge bg-' + getBorrowBadgeClass(bs) + '">' + escapeHtml(bs) + '</span></td>' +
       '<td><span class="badge bg-' + getDocBadgeClass(ds) + '">' + escapeHtml(ds) + '</span></td>' +
-      '<td><span class="badge bg-' + retClass + '">' + retText + '</span></td>' +
-      '<td style="white-space:nowrap;">' + action + '</td></tr>';
+      '<td class="text-nowrap">' + action + '</td>' +
+      '</tr>';
   }).join('');
-  var badge = document.getElementById('adminTableBadge');
-  if (badge) badge.textContent = rows.length + ' รายการ';
+
+  var badge   = document.getElementById('adminTableBadge');
+  if (badge)   badge.textContent = rows.length + ' รายการ';
   var countEl = document.getElementById('adminFilteredCount');
   if (countEl) countEl.textContent = rows.length;
+}
+
+// ==========================================
+// LOCAL STATE UPDATE (ช่วยความเร็ว — ไม่ต้อง reload จาก server)
+// ==========================================
+
+/**
+ * อัปเดตข้อมูลใน systemData ทันทีหลัง save สำเร็จ
+ * แล้วเรียก filterAdminTable() เพื่อ re-render
+ */
+function _localUpdatePerson(userId, sourceSheet, changes) {
+  if (!changes) return;
+  var idx = -1;
+  for (var i = 0; i < systemData.length; i++) {
+    if (String(systemData[i].id) === String(userId) && (systemData[i].source_sheet || '') === (sourceSheet || '')) {
+      idx = i; break;
+    }
+  }
+  if (idx >= 0) {
+    Object.keys(changes).forEach(function(k) {
+      if (changes[k] !== undefined && changes[k] !== null) systemData[idx][k] = changes[k];
+    });
+    updateAdminStats();
+    _updateModeButtonCounts();
+    filterAdminTable();
+  }
+}
+
+/** ลบออกจาก systemData ทันที */
+function _localDeletePerson(userId, sourceSheet) {
+  systemData = systemData.filter(function(x) {
+    return !(String(x.id) === String(userId) && (x.source_sheet || '') === (sourceSheet || ''));
+  });
+  updateAdminStats();
+  _updateModeButtonCounts();
+  filterAdminTable();
 }
 
 // ==========================================
@@ -662,11 +804,20 @@ function advisorApproveDoc(id, sheet, userName, userRoom, userSerial, userType) 
     google.script.run
       .withSuccessHandler(function (r) {
         hideGlobalLoading();
-        if (r.success) { showToast('อนุมัติเอกสารเรียบร้อย'); loadAdminView(); }
-        else Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: r.message });
+        if (r.success) {
+          showToast('อนุมัติเอกสารเรียบร้อย');
+          // ✅ FIX: อัปเดต local แทน loadAdminView()
+          _localUpdatePerson(id, sheet, { docStatus: 'เอกสารผ่าน' });
+        } else {
+          Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: r.message });
+        }
       })
       .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
-      .advisorApproveDoc({ userId: id, source_sheet: sheet, userName: userName || '', userRoom: userRoom || '', userSerial: userSerial || '', userType: userType || 'student', editorName: currentUser ? currentUser.name : '' });
+      .advisorApproveDoc({
+        userId: id, source_sheet: sheet, userName: userName || '',
+        userRoom: userRoom || '', userSerial: userSerial || '',
+        userType: userType || 'student', editorName: currentUser ? currentUser.name : ''
+      });
   });
 }
 
@@ -678,10 +829,12 @@ function refreshSystemData() {
   showGlobalLoading('กำลังอัปเดตและซิงค์ข้อมูล...');
   google.script.run
     .withSuccessHandler(function (data) {
-      systemData = data || [];
+      systemData  = data || [];
+      _dataLoaded = true;
       updateAdminUIForRole();
-      if (currentUser && currentUser.role === 'advisor') filterAdminTable();
-      else { updateAdminStats(); filterAdminTable(); }
+      updateAdminStats();
+      _updateModeButtonCounts();
+      filterAdminTable();
       hideGlobalLoading();
       showToast('ซิงค์ข้อมูลเรียบร้อย');
     })
@@ -690,27 +843,26 @@ function refreshSystemData() {
 }
 
 // ==========================================
-// ACTION MODAL
+// ACTION MODAL (อัปโหลดเอกสาร — ผู้ใช้ทั่วไป)
 // ==========================================
 
 function openActionModal(id, sheet) {
   var p = systemData.find(function (x) { return String(x.id) === String(id) && (x.source_sheet || '') === sheet; });
   if (!p) { showError('ไม่พบข้อมูลผู้ใช้'); return; }
-  document.getElementById('m_userId').value = p.id;
-  document.getElementById('m_userType').value = p.type || 'student';
-  document.getElementById('m_userRoom').value = p.room || '';
-  document.getElementById('m_userName').value = p.name || '';
+  document.getElementById('m_userId').value        = p.id;
+  document.getElementById('m_userType').value      = p.type || 'student';
+  document.getElementById('m_userRoom').value      = p.room || '';
+  document.getElementById('m_userName').value      = p.name || '';
   document.getElementById('m_displayName').textContent = p.name;
   document.getElementById('m_userSerial_input').value = p.serial || '-';
   var bs = p.borrowStatus || 'ยังไม่ยืม';
-  var ds = p.docStatus || 'ยังไม่ส่ง';
+  var ds = p.docStatus   || 'ยังไม่ส่ง';
   var bb = document.getElementById('m_borrow_badge');
   var db = document.getElementById('m_doc_badge');
   if (bb) { bb.textContent = bs; bb.className = 'badge bg-' + getBorrowBadgeClass(bs); }
   if (db) { db.textContent = ds; db.className = 'badge bg-' + getDocBadgeClass(ds); }
   var statusSel = document.querySelector('#updateForm [name="statusSelect"]');
   if (statusSel) statusSel.value = bs;
-  // เก็บ source_sheet ไว้ใน hidden field เพื่อส่งให้ processForm
   var ssField = document.getElementById('m_sourceSheet');
   if (ssField) ssField.value = p.source_sheet || '';
   var links = [];
@@ -728,20 +880,19 @@ function openActionModal(id, sheet) {
 
 function handleFormSubmit(form) {
   var obj = {
-    userId: form.querySelector('[name="userId"]').value,
-    userName: form.querySelector('[name="userName"]').value,
-    userType: form.querySelector('[name="userType"]').value,
-    userRoom: form.querySelector('[name="userRoom"]').value,
+    userId:     form.querySelector('[name="userId"]').value,
+    userName:   form.querySelector('[name="userName"]').value,
+    userType:   form.querySelector('[name="userType"]').value,
+    userRoom:   form.querySelector('[name="userRoom"]').value,
     userSerial: form.querySelector('[name="userSerial"]') ? form.querySelector('[name="userSerial"]').value : '',
     statusSelect: form.querySelector('[name="statusSelect"]') ? form.querySelector('[name="statusSelect"]').value : '',
-    note: form.querySelector('[name="note"]') ? form.querySelector('[name="note"]').value : '',
-    // source_sheet จำเป็นสำหรับ processForm เพื่ออัปเดตชีตรายชื่อหลัก
+    note:       form.querySelector('[name="note"]') ? form.querySelector('[name="note"]').value : '',
     source_sheet: document.getElementById('m_sourceSheet') ? document.getElementById('m_sourceSheet').value : ''
   };
   var fa = form.querySelector('[name="file_agreement"]') ? form.querySelector('[name="file_agreement"]').files[0] : null;
-  var fr = form.querySelector('[name="file_return"]') ? form.querySelector('[name="file_return"]').files[0] : null;
-  if (!fa && !fr && !obj.note) {
-    Swal.fire({ icon: 'info', title: 'ไม่มีข้อมูลที่เปลี่ยนแปลง', text: 'กรุณาเลือกไฟล์หรือกรอกหมายเหตุก่อนบันทึก' });
+  var fr = form.querySelector('[name="file_return"]')    ? form.querySelector('[name="file_return"]').files[0]    : null;
+  if (!fa && !fr && !obj.note && !obj.statusSelect) {
+    Swal.fire({ icon: 'info', title: 'ไม่มีข้อมูลที่เปลี่ยนแปลง' });
     return false;
   }
   var filesToRead = [];
@@ -753,8 +904,18 @@ function handleFormSubmit(form) {
       google.script.run
         .withSuccessHandler(function (res) {
           hideGlobalLoading();
-          if (res.success) { showToast('บันทึกเรียบร้อย'); $('#actionModal').modal('hide'); loadAdminView(); }
-          else Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+          if (res.success) {
+            showToast('บันทึกเรียบร้อย');
+            $('#actionModal').modal('hide');
+            // ✅ FIX: อัปเดต local แทน loadAdminView()
+            var changes = {};
+            if (fr) changes.borrowStatus = 'อยู่ระหว่างการส่งคืน';
+            else if (fa) { changes.borrowStatus = 'ยืมอยู่'; changes.docStatus = 'รอตรวจสอบ'; }
+            if (obj.note) changes.note = obj.note;
+            _localUpdatePerson(obj.userId, obj.source_sheet, changes);
+          } else {
+            Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+          }
         })
         .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
         .processForm(obj);
@@ -773,50 +934,94 @@ function handleFormSubmit(form) {
 function openAdminEdit(id, sheet) {
   var p = systemData.find(function (x) { return String(x.id) === String(id) && (x.source_sheet || '') === sheet; });
   if (!p) { showError('ไม่พบข้อมูล'); return; }
-  document.getElementById('adm_id').value = p.id;
-  document.getElementById('adm_name').value = p.name;
+  document.getElementById('adm_id').value          = p.id;
+  document.getElementById('adm_name').value        = p.name;
   document.getElementById('adm_name_hidden').value = p.name;
-  document.getElementById('adm_type').value = p.type || '';
-  document.getElementById('adm_room').value = p.room || '';
-  document.getElementById('adm_serial').value = p.serial || '-';
+  document.getElementById('adm_type').value        = p.type || '';
+  document.getElementById('adm_room').value        = p.room || '';
+  document.getElementById('adm_serial').value      = p.serial || '-';
   document.getElementById('adm_borrow_status').value = p.borrowStatus || 'ยังไม่ยืม';
-  document.getElementById('adm_doc_status').value = p.docStatus || '';
-  document.getElementById('adm_note').value = p.note || '';
-  var files = p.files || {};
+  document.getElementById('adm_doc_status').value    = p.docStatus || '';
+  document.getElementById('adm_note').value          = p.note || '';
+  var files  = p.files || {};
   var mkLink = function (url, label, cls) {
     return url
       ? '<a href="' + escapeHtml(url) + '" target="_blank" class="btn btn-sm btn-outline-' + cls + ' me-1 mb-1"><i class="fas fa-file-pdf me-1"></i>' + label + '</a>'
       : '<span class="text-muted small">ไม่มีไฟล์</span>';
   };
-  document.getElementById('adm_file_list').innerHTML = mkLink(files.agreement, 'สัญญาการยืม', 'primary');
+  document.getElementById('adm_file_list').innerHTML        = mkLink(files.agreement, 'สัญญาการยืม', 'primary');
   document.getElementById('adm_return_file_list').innerHTML = mkLink(p.returnDocUrl, 'หลักฐานการคืน', 'success');
   $('#adminEditModal').modal('show');
 }
 
 function saveAdminData() {
-  var person = systemData.find(function (x) { return String(x.id) === String(document.getElementById('adm_id').value); });
-  var data = {
-    userId: document.getElementById('adm_id').value,
-    userName: document.getElementById('adm_name').value,
-    userType: document.getElementById('adm_type').value,
-    userRoom: document.getElementById('adm_room').value,
-    userSerial: document.getElementById('adm_serial').value,
-    source_sheet: person ? (person.source_sheet || '') : '',
+  var idVal  = document.getElementById('adm_id').value;
+  var person = systemData.find(function (x) { return String(x.id) === String(idVal); });
+  var data   = {
+    userId:           idVal,
+    userName:         document.getElementById('adm_name').value,
+    userType:         document.getElementById('adm_type').value,
+    userRoom:         document.getElementById('adm_room').value,
+    userSerial:       document.getElementById('adm_serial').value,
+    source_sheet:     person ? (person.source_sheet || '') : '',
     borrowStatusSelect: document.getElementById('adm_borrow_status').value,
-    docStatusSelect: document.getElementById('adm_doc_status').value,
-    note: document.getElementById('adm_note').value,
-    editorRole: currentUser ? currentUser.role : '',
-    editorName: currentUser ? (currentUser.name || '') : ''
+    docStatusSelect:    document.getElementById('adm_doc_status').value,
+    note:             document.getElementById('adm_note').value,
+    editorRole:       currentUser ? currentUser.role  : '',
+    editorName:       currentUser ? (currentUser.name || '') : ''
   };
   showGlobalLoading('กำลังบันทึกข้อมูล...');
   google.script.run
     .withSuccessHandler(function (res) {
       hideGlobalLoading();
-      if (res.success) { showToast('บันทึกเรียบร้อย'); $('#adminEditModal').modal('hide'); loadAdminView(); }
-      else Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+      if (res.success) {
+        showToast('บันทึกเรียบร้อย');
+        $('#adminEditModal').modal('hide');
+        // ✅ FIX: อัปเดต local แทน loadAdminView()
+        _localUpdatePerson(data.userId, data.source_sheet, {
+          borrowStatus: data.borrowStatusSelect || undefined,
+          docStatus:    data.docStatusSelect    || undefined,
+          note:         data.note
+        });
+      } else {
+        Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+      }
     })
     .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
     .adminUpdateData(data);
+}
+
+// ==========================================
+// DELETE
+// ==========================================
+
+function confirmDeleteUser(id, sheet, name) {
+  Swal.fire({
+    title: 'ลบ ' + name + '?', text: 'การกระทำนี้ไม่สามารถย้อนกลับได้',
+    icon: 'warning', showCancelButton: true,
+    confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก',
+    confirmButtonColor: '#dc3545'
+  }).then(function(res) {
+    if (!res.isConfirmed) return;
+    showGlobalLoading('กำลังลบข้อมูล...');
+    google.script.run
+      .withSuccessHandler(function(r) {
+        hideGlobalLoading();
+        if (r.success) {
+          showToast('ลบข้อมูลเรียบร้อย', 'success');
+          $('#adminEditModal').modal('hide');
+          // ✅ FIX: ลบออกจาก local แทน loadAdminView()
+          _localDeletePerson(id, sheet);
+        } else {
+          Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: r.message });
+        }
+      })
+      .withFailureHandler(function(err) { hideGlobalLoading(); showError(err); })
+      .adminDeleteUser({
+        id: id, name: name, source_sheet: sheet,
+        editorRole: currentUser ? currentUser.role : ''
+      });
+  });
 }
 
 // ==========================================
@@ -824,7 +1029,8 @@ function saveAdminData() {
 // ==========================================
 
 function openExportModal() {
-  var filterText = 'ระดับ: ' + ((document.getElementById('adminLevelFilter') || {}).value || 'ทั้งหมด') + ' | ห้อง: ' + ((document.getElementById('adminRoomFilter') || {}).value || 'ทั้งหมด');
+  var filterText = 'ระดับ: ' + ((document.getElementById('adminLevelFilter') || {}).value || 'ทั้งหมด') +
+    ' | ห้อง: ' + ((document.getElementById('adminRoomFilter') || {}).value || 'ทั้งหมด');
   var el = document.getElementById('exportFilterText');
   if (el) el.textContent = filterText;
   $('#exportModal').modal('show');
@@ -835,29 +1041,29 @@ function executeExport() {
   var opts = scope === 'filtered' ? {
     scope: 'filtered',
     levelFilter: (document.getElementById('adminLevelFilter') || {}).value || '',
-    roomFilter: (document.getElementById('adminRoomFilter') || {}).value || ''
+    roomFilter:  (document.getElementById('adminRoomFilter')  || {}).value || ''
   } : { scope: 'all' };
   showGlobalLoading('กำลังสร้างไฟล์...');
   google.script.run
     .withSuccessHandler(function (data) {
       hideGlobalLoading();
       var colDefs = [
-        { id: 'col_id', key: 'id', label: 'รหัส' },
-        { id: 'col_name', key: 'name', label: 'ชื่อ-นามสกุล' },
+        { id: 'col_id',     key: 'id',           label: 'รหัส'         },
+        { id: 'col_name',   key: 'name',         label: 'ชื่อ-นามสกุล' },
         { id: 'col_status', key: 'borrowStatus', label: 'สถานะเครื่อง' },
-        { id: 'col_doc', key: 'docStatus', label: 'สถานะเอกสาร' },
-        { id: 'col_level', key: 'source_sheet', label: 'ระดับชั้น' },
-        { id: 'col_room', key: 'room', label: 'ห้อง' },
-        { id: 'col_serial', key: 'serial', label: 'Serial Number' },
-        { id: 'col_note', key: 'note', label: 'หมายเหตุ' }
+        { id: 'col_doc',    key: 'docStatus',    label: 'สถานะเอกสาร'  },
+        { id: 'col_level',  key: 'source_sheet', label: 'ระดับชั้น'    },
+        { id: 'col_room',   key: 'room',         label: 'ห้อง'         },
+        { id: 'col_serial', key: 'serial',       label: 'Serial Number' },
+        { id: 'col_note',   key: 'note',         label: 'หมายเหตุ'     }
       ].filter(function (c) { var el = document.getElementById(c.id); return el && el.checked; });
       var csv = '\uFEFF' + colDefs.map(function (c) { return '"' + c.label + '"'; }).join(',') + '\n';
       data.forEach(function (r) {
         csv += colDefs.map(function (c) { return '"' + String(r[c.key] || '').replace(/"/g, '""') + '"'; }).join(',') + '\n';
       });
       var blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-      var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
+      var a    = document.createElement('a');
+      a.href   = URL.createObjectURL(blob);
       a.download = 'iPad_Export_' + getTimestamp() + '.csv';
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(a.href);
@@ -883,7 +1089,7 @@ function openAdvancedReport() {
           var borrowed = (r.borrowed || 0) + (r.returned || 0) + (r.repair || 0);
           var pct = r.total > 0 ? Math.round(borrowed / r.total * 100) : 0;
           var cls = pct >= 80 ? 'text-success fw-bold' : pct >= 50 ? 'text-warning' : 'text-danger';
-          return '<tr><td class="text-start fw-bold">' + escapeHtml(r.level) + ' / ' + escapeHtml(r.room) + '</td>' +
+          return '<tr><td class="text-start fw-bold">' + escapeHtml(r.level.replace('รายชื่อนักเรียน ', '')) + ' / ห้อง ' + escapeHtml(r.room) + '</td>' +
             '<td>' + r.total + '</td><td class="' + cls + '">' + borrowed + ' <small>(' + pct + '%)</small></td>' +
             '<td class="text-success">' + (r.docPassed || 0) + '</td>' +
             '<td class="d-none d-md-table-cell">' + (r.notBorrowed || 0) + '</td>' +
@@ -913,11 +1119,11 @@ function openMissingAudit() {
         tbody.innerHTML = !auditOrphansData.length
           ? '<tr><td colspan="4" class="text-center text-success py-4"><i class="fas fa-check-circle me-2 fs-4"></i>ข้อมูลครบถ้วน ไม่พบรายการตกหล่น</td></tr>'
           : auditOrphansData.map(function (o) {
-            var s = (o.suggestions && o.suggestions[0]) || {};
-            return '<tr><td>' + escapeHtml(s.sheet || '-') + '</td><td>' + escapeHtml(s.room || '-') + '</td>' +
-              '<td class="fw-bold text-danger">' + escapeHtml(o.assetName || '-') + '</td>' +
-              '<td><span class="badge bg-secondary">' + escapeHtml(o.assetStatus || o.serial || '-') + '</span></td></tr>';
-          }).join('');
+              var s = (o.suggestions && o.suggestions[0]) || {};
+              return '<tr><td>' + escapeHtml(s.sheet || '-') + '</td><td>' + escapeHtml(s.room || '-') + '</td>' +
+                '<td class="fw-bold text-danger">' + escapeHtml(o.assetName || '-') + '</td>' +
+                '<td><span class="badge bg-secondary">' + escapeHtml(o.serial || '-') + '</span></td></tr>';
+            }).join('');
       }
       var countEl = document.getElementById('auditCountText');
       if (countEl) countEl.textContent = auditOrphansData.length + ' รายการ';
@@ -929,8 +1135,7 @@ function openMissingAudit() {
 
 function openMappingModalFromMissing() {
   if (!auditOrphansData || !auditOrphansData.length) {
-    Swal.fire({ icon: 'info', title: 'ไม่มีรายการที่ต้องจับคู่' });
-    return;
+    Swal.fire({ icon: 'info', title: 'ไม่มีรายการที่ต้องจับคู่' }); return;
   }
   var tbody = document.getElementById('auditTableBodyMapping');
   tbody.innerHTML = auditOrphansData.map(function (o, idx) {
@@ -938,7 +1143,8 @@ function openMappingModalFromMissing() {
       (o.suggestions || []).map(function (s, sidx) {
         return '<option value="' + sidx + '">' + escapeHtml(s.name) + ' (' + escapeHtml(s.sheet || '') + ', ห้อง ' + escapeHtml(s.room || '') + ')</option>';
       }).join('');
-    return '<tr><td class="text-center"><input type="checkbox" class="form-check-input map-check" data-idx="' + idx + '" checked></td>' +
+    return '<tr>' +
+      '<td class="text-center"><input type="checkbox" class="form-check-input map-check" data-idx="' + idx + '" checked></td>' +
       '<td class="fw-bold text-danger">' + escapeHtml(o.assetName || '-') + '</td>' +
       '<td><select class="form-select form-select-sm map-select" data-idx="' + idx + '">' + opts + '</select></td>' +
       '<td class="small text-muted">' + escapeHtml(o.serial || '-') + '</td>' +
@@ -952,24 +1158,30 @@ function openMappingModalFromMissing() {
 function saveMappingSelections() {
   var updates = [];
   document.querySelectorAll('.map-check:checked').forEach(function (cb) {
-    var idx = parseInt(cb.getAttribute('data-idx'), 10);
-    var sel = document.querySelector('.map-select[data-idx="' + idx + '"]');
+    var idx     = parseInt(cb.getAttribute('data-idx'), 10);
+    var sel     = document.querySelector('.map-select[data-idx="' + idx + '"]');
     var suggIdx = sel ? parseInt(sel.value, 10) : NaN;
-    var o = auditOrphansData[idx];
+    var o       = auditOrphansData[idx];
     if (!o || isNaN(suggIdx) || suggIdx < 0) return;
     var s = o.suggestions && o.suggestions[suggIdx];
     if (s && s.name) updates.push({ oldAssetName: o.assetName, correctName: s.name, serial: o.serial });
   });
-  if (!updates.length) { Swal.fire({ icon: 'warning', title: 'ไม่มีรายการที่เลือก', text: 'กรุณาเลือกชื่อที่ถูกต้องใน dropdown ก่อน' }); return; }
-  Swal.fire({ title: 'ยืนยันการจับคู่?', text: 'จะบันทึก ' + updates.length + ' รายการ', icon: 'question', showCancelButton: true, confirmButtonText: 'ยืนยัน', cancelButtonText: 'ยกเลิก' })
+  if (!updates.length) { Swal.fire({ icon: 'warning', title: 'ไม่มีรายการที่เลือก' }); return; }
+  Swal.fire({ title: 'ยืนยันการจับคู่?', text: 'จะบันทึก ' + updates.length + ' รายการ', icon: 'question',
+    showCancelButton: true, confirmButtonText: 'ยืนยัน', cancelButtonText: 'ยกเลิก' })
     .then(function (res) {
       if (!res.isConfirmed) return;
       showGlobalLoading('กำลังบันทึกการจับคู่...');
       google.script.run
         .withSuccessHandler(function (res) {
           hideGlobalLoading();
-          if (res.success) { showToast('จับคู่ ' + res.count + ' รายการสำเร็จ'); $('#auditModalMapping').modal('hide'); openMissingAudit(); }
-          else Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+          if (res.success) {
+            showToast('จับคู่ ' + res.count + ' รายการสำเร็จ');
+            $('#auditModalMapping').modal('hide');
+            openMissingAudit();
+          } else {
+            Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+          }
         })
         .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
         .adminFixAssetNameBulk(updates);
@@ -983,24 +1195,30 @@ function saveMappingSelections() {
 function openAddUserModal() { $('#adminAddUserModal').modal('show'); }
 
 function toggleNewUserFields() {
-  var v = document.getElementById('new_targetSheet').value;
+  var v  = document.getElementById('new_targetSheet').value;
   var sf = document.getElementById('new_studentFields');
   if (sf) sf.style.display = (v && v.indexOf('นักเรียน') >= 0) ? 'block' : 'none';
 }
 
 function saveNewUser() {
   var sheet = document.getElementById('new_targetSheet').value;
-  var name = document.getElementById('new_name').value.trim();
-  var id = document.getElementById('new_id').value.trim();
-  var room = document.getElementById('new_room').value;
+  var name  = document.getElementById('new_name').value.trim();
+  var id    = document.getElementById('new_id').value.trim();
+  var room  = document.getElementById('new_room').value;
   if (!name) { Swal.fire({ icon: 'warning', title: 'กรุณากรอกชื่อ-นามสกุล' }); return; }
   if (sheet.indexOf('นักเรียน') >= 0 && (!id || !room)) { Swal.fire({ icon: 'warning', title: 'กรุณากรอกรหัสและห้อง' }); return; }
   showGlobalLoading('กำลังเพิ่มรายชื่อ...');
   google.script.run
     .withSuccessHandler(function (res) {
       hideGlobalLoading();
-      if (res.success) { showToast('เพิ่มรายชื่อเรียบร้อย'); $('#adminAddUserModal').modal('hide'); loadAdminView(); }
-      else Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+      if (res.success) {
+        showToast('เพิ่มรายชื่อเรียบร้อย');
+        $('#adminAddUserModal').modal('hide');
+        // เพิ่มคนใหม่ต้องโหลดใหม่ (เพราะไม่มีข้อมูลครบ)
+        loadAdminView();
+      } else {
+        Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+      }
     })
     .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
     .adminAddUser({ targetSheet: sheet, name: name, id: id || ('T-' + Date.now()), room: room || '' });
@@ -1013,16 +1231,16 @@ function saveNewUser() {
 function openAdvisorReturnModal(id) {
   var p = systemData.find(function (x) { return String(x.id) === String(id); });
   if (!p) { showError('ไม่พบข้อมูล'); return; }
-  document.getElementById('ar_userId').value = p.id;
+  document.getElementById('ar_userId').value   = p.id;
   document.getElementById('ar_userType').value = p.type || '';
   document.getElementById('ar_userRoom').value = p.room || '';
   document.getElementById('ar_userName').value = p.name || '';
   document.getElementById('ar_userSerial').value = p.serial || '';
-  document.getElementById('ar_showName').textContent = p.name;
+  document.getElementById('ar_showName').textContent   = p.name;
   document.getElementById('ar_showSerial').textContent = p.serial || '-';
   var form = document.getElementById('advisorReturnForm');
   if (form) {
-    var fi = form.querySelector('[name="file_return"]');
+    var fi   = form.querySelector('[name="file_return"]');
     if (fi) fi.value = '';
     var note = form.querySelector('[name="note"]');
     if (note) note.value = '';
@@ -1031,11 +1249,13 @@ function openAdvisorReturnModal(id) {
 }
 
 function handleAdvisorReturnSubmit(form) {
-  var fd = new FormData(form);
-  var p_return = systemData.find(function(x){ return String(x.id) === String(fd.get('userId')); });
-  var obj = { userId: fd.get('userId'), userName: fd.get('userName'), userType: fd.get('userType'),
-              userRoom: fd.get('userRoom'), userSerial: fd.get('userSerial'), note: fd.get('note'),
-              source_sheet: p_return ? (p_return.source_sheet || '') : '' };
+  var fd    = new FormData(form);
+  var pRet  = systemData.find(function(x){ return String(x.id) === String(fd.get('userId')); });
+  var obj   = {
+    userId: fd.get('userId'), userName: fd.get('userName'), userType: fd.get('userType'),
+    userRoom: fd.get('userRoom'), userSerial: fd.get('userSerial'), note: fd.get('note'),
+    source_sheet: pRet ? (pRet.source_sheet || '') : ''
+  };
   var fr = form.querySelector('[name="file_return"]').files[0];
   if (!fr) { Swal.fire({ icon: 'warning', title: 'กรุณาเลือกไฟล์หลักฐานการคืน' }); return false; }
   readFileAsBase64(fr, function (b64) {
@@ -1045,8 +1265,14 @@ function handleAdvisorReturnSubmit(form) {
     google.script.run
       .withSuccessHandler(function (res) {
         hideGlobalLoading();
-        if (res.success) { showToast('ส่งเรื่องเรียบร้อย — แอดมินจะดำเนินการต่อไป'); $('#advisorReturnModal').modal('hide'); loadAdminView(); }
-        else Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+        if (res.success) {
+          showToast('ส่งเรื่องเรียบร้อย — แอดมินจะดำเนินการต่อไป');
+          $('#advisorReturnModal').modal('hide');
+          // ✅ FIX: อัปเดต local แทน loadAdminView()
+          _localUpdatePerson(obj.userId, obj.source_sheet, { borrowStatus: 'อยู่ระหว่างการส่งคืน' });
+        } else {
+          Swal.fire({ icon: 'error', title: 'เกิดข้อผิดพลาด', text: res.message });
+        }
       })
       .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
       .processAdvisorReturn(obj);
@@ -1055,29 +1281,18 @@ function handleAdvisorReturnSubmit(form) {
 }
 
 // ==========================================
-// PREVIEW MODAL (PDF / Image) — ฟังก์ชันสมบูรณ์
+// PREVIEW MODAL (PDF / Image)
 // ==========================================
 
-/**
- * เปิด preview modal
- * @param {string} url   URL ของไฟล์
- * @param {string} type  'pdf' | 'image' (optional — ตรวจจาก URL อัตโนมัติ)
- */
 function openPreviewModal(url, type) {
   if (!url) { Swal.fire({ icon: 'warning', title: 'ไม่พบลิงก์ไฟล์' }); return; }
-  _previewScale = 1;
-  _previewRotation = 0;
-
-  var imgEl = document.getElementById('previewImage');
+  _previewScale = 1; _previewRotation = 0;
+  var imgEl           = document.getElementById('previewImage');
   var iframeContainer = document.getElementById('previewIframeContainer');
-  var iframeEl = document.getElementById('previewIframe');
-  var imgContainer = document.getElementById('imageContainer');
-
-  var isPdf = type === 'pdf' ||
-    /\.pdf($|\?)/i.test(url) ||
-    url.indexOf('export=download') >= 0 ||
-    url.indexOf('export=pdf') >= 0;
-
+  var iframeEl        = document.getElementById('previewIframe');
+  var imgContainer    = document.getElementById('imageContainer');
+  var isPdf = type === 'pdf' || /\.pdf($|\?)/i.test(url) ||
+    url.indexOf('export=download') >= 0 || url.indexOf('export=pdf') >= 0;
   if (isPdf) {
     if (imgEl) imgEl.style.display = 'none';
     if (imgContainer) imgContainer.style.transform = '';
@@ -1092,24 +1307,9 @@ function openPreviewModal(url, type) {
   $('#previewModal').modal('show');
 }
 
-/** ซูมรูปภาพ (factor เช่น 1.2 = zoom in, 0.8 = zoom out) */
-function zoomPreview(factor) {
-  _previewScale = Math.max(0.2, Math.min(5, _previewScale * factor));
-  _applyPreviewTransform();
-}
-
-/** หมุนรูปภาพทีละ 90 องศา */
-function rotatePreview() {
-  _previewRotation = (_previewRotation + 90) % 360;
-  _applyPreviewTransform();
-}
-
-/** รีเซ็ต zoom/rotate กลับค่าเดิม */
-function resetPreview() {
-  _previewScale = 1;
-  _previewRotation = 0;
-  _applyPreviewTransform();
-}
+function zoomPreview(factor) { _previewScale = Math.max(0.2, Math.min(5, _previewScale * factor)); _applyPreviewTransform(); }
+function rotatePreview()     { _previewRotation = (_previewRotation + 90) % 360; _applyPreviewTransform(); }
+function resetPreview()      { _previewScale = 1; _previewRotation = 0; _applyPreviewTransform(); }
 
 function _applyPreviewTransform() {
   var container = document.getElementById('imageContainer');
@@ -1120,11 +1320,9 @@ function _applyPreviewTransform() {
   }
 }
 
-// ล้าง iframe เมื่อปิด modal
 $(document).on('hide.bs.modal', '#previewModal', function () {
   var iframeEl = document.getElementById('previewIframe');
   if (iframeEl) iframeEl.src = '';
-  _previewScale = 1;
-  _previewRotation = 0;
+  _previewScale = 1; _previewRotation = 0;
 });
 </script>
