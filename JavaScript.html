@@ -9,6 +9,7 @@ var currentLevel      = '';
 var adminMode         = 'all';
 var currentUser       = null;
 var dataTableInstance = null;
+var adminDataTableInstance = null;
 var auditOrphansData  = [];
 var uploadDocPersonList = [];
 var _dataLoaded       = false;   // ✅ ป้องกันโหลดซ้ำโดยไม่จำเป็น
@@ -342,9 +343,11 @@ function renderTable(rows) {
   if (countEl) countEl.textContent = rows.length;
   if (dataTableInstance) { try { dataTableInstance.destroy(); } catch (e) {} dataTableInstance = null; }
   dataTableInstance = $('#dataTable').DataTable({
-    pageLength: 25, order: [],
+    pageLength: 20, order: [],
+    lengthMenu: [[10, 20, 50, 100, -1], [10, 20, 50, 100, "ทั้งหมด"]], // ✅ เพิ่มบรรทัดนี้
     language: { url: '//cdn.datatables.net/plug-ins/1.13.4/i18n/th.json' }
   });
+  
 }
 
 // ==========================================
@@ -410,6 +413,14 @@ function handleUploadDocSubmit(form) {
   if (!p) { Swal.fire({ icon: 'error', title: 'ไม่พบข้อมูล กรุณาเลือกใหม่' }); return false; }
   var fileInput = form.querySelector('[name="ud_file"]');
   if (!fileInput || !fileInput.files[0]) { Swal.fire({ icon: 'warning', title: 'กรุณาเลือกไฟล์ PDF' }); return false; }
+
+  var btn = document.querySelector('button[form="' + form.id + '"]');
+  var originalText = btn ? btn.innerHTML : 'อัปโหลด';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>กำลังอัปโหลดไฟล์...';
+  }
+
   var obj = {
     userId: p.id, userName: p.name, userType: p.type, userRoom: p.room, userSerial: p.serial,
     source_sheet: p.source_sheet || '', uploadType: uploadType,
@@ -447,14 +458,28 @@ function handleUploadDocSubmit(form) {
 function showAdvisorLogin() { $('#advisorLoginModal').modal('show'); }
 function showAdminLogin()   { $('#adminLoginModal').modal('show'); }
 
-function loginAdmin() {
+function loginAdmin(btnElement) {
   var u = document.getElementById('adminUsernameInput').value.trim();
   var p = document.getElementById('adminPasswordInput').value;
   if (!u || !p) { Swal.fire({ icon: 'warning', title: 'กรุณากรอก Username และ Password' }); return; }
-  showGlobalLoading('กำลังตรวจสอบ...');
+
+  // 1. จัดการเปลี่ยนสถานะปุ่มให้มีไอคอนหมุนๆ
+  var btn = btnElement || document.querySelector('#adminLoginModal .btn-primary') || document.querySelector('#adminLoginModal button[onclick*="loginAdmin"]');
+  var originalText = 'เข้าสู่ระบบ';
+  if (btn) {
+    originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>กำลังตรวจสอบ...';
+  }
+
+  showGlobalLoading('กำลังตรวจสอบสิทธิ์...');
+  
   google.script.run
     .withSuccessHandler(function (res) {
+      // 2. คืนค่าปุ่มกลับมาเป็นเหมือนเดิม
+      if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
       hideGlobalLoading();
+      
       if (res.success) {
         currentUser = { role: 'admin', name: res.name || 'Admin' };
         document.getElementById('adminPasswordInput').value = '';
@@ -465,18 +490,37 @@ function loginAdmin() {
         Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบไม่สำเร็จ', text: res.message || 'Username หรือ Password ไม่ถูกต้อง' });
       }
     })
-    .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
+    .withFailureHandler(function (err) { 
+      // กรณีเกิด Error ก็ต้องคืนค่าปุ่มเช่นกัน
+      if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
+      hideGlobalLoading(); 
+      showError(err); 
+    })
     .verifyAdmin(u, p);
 }
 
-function loginAdvisor() {
+function loginAdvisor(btnElement) {
   var u = document.getElementById('advUsernameInput').value.trim();
   var p = document.getElementById('advPasswordInput').value;
   if (!u || !p) { Swal.fire({ icon: 'warning', title: 'กรุณากรอก Username และ Password' }); return; }
-  showGlobalLoading('กำลังตรวจสอบ...');
+
+  // 1. จัดการเปลี่ยนสถานะปุ่ม
+  var btn = btnElement || document.querySelector('#advisorLoginModal .btn-primary') || document.querySelector('#advisorLoginModal button[onclick*="loginAdvisor"]');
+  var originalText = 'เข้าสู่ระบบ';
+  if (btn) {
+    originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>กำลังตรวจสอบ...';
+  }
+
+  showGlobalLoading('กำลังตรวจสอบสิทธิ์...');
+  
   google.script.run
     .withSuccessHandler(function (res) {
+      // 2. คืนค่าปุ่มกลับมา
+      if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
       hideGlobalLoading();
+      
       if (res.success) {
         currentUser = { role: 'advisor', name: res.name, level: res.level, room: res.room };
         document.getElementById('advPasswordInput').value = '';
@@ -487,7 +531,11 @@ function loginAdvisor() {
         Swal.fire({ icon: 'error', title: 'เข้าสู่ระบบไม่สำเร็จ', text: res.message || 'Username หรือ Password ไม่ถูกต้อง' });
       }
     })
-    .withFailureHandler(function (err) { hideGlobalLoading(); showError(err); })
+    .withFailureHandler(function (err) { 
+      if (btn) { btn.disabled = false; btn.innerHTML = originalText; }
+      hideGlobalLoading(); 
+      showError(err); 
+    })
     .verifyAdvisor(u, p);
 }
 
@@ -639,12 +687,13 @@ function filterAdminTable() {
     if (statusFilter && (p.borrowStatus || '') !== statusFilter) return false;
     if (adminMode === 'return') return (p.borrowStatus || '').indexOf('อยู่ระหว่างการส่งคืน') >= 0;
     if (adminMode === 'doc')    return (p.docStatus || '') === 'รอตรวจสอบ';
-    // ✅ Text search
+    
+    // ✅ Text search (แก้ไขแล้ว: ป้องกัน Error หากข้อมูลเป็นตัวเลข)
     if (q) {
-      var nameMatch   = (p.name   || '').toLowerCase().indexOf(q) >= 0;
-      var idMatch     = String(p.id || '').toLowerCase().indexOf(q) >= 0;
-      var serialMatch = (p.serial || '').toLowerCase().indexOf(q) >= 0;
-      var roomMatch   = (p.room   || '').toLowerCase().indexOf(q) >= 0;
+      var nameMatch   = String(p.name   || '').toLowerCase().indexOf(q) >= 0;
+      var idMatch     = String(p.id     || '').toLowerCase().indexOf(q) >= 0;
+      var serialMatch = String(p.serial || '').toLowerCase().indexOf(q) >= 0;
+      var roomMatch   = String(p.room   || '').toLowerCase().indexOf(q) >= 0;
       if (!nameMatch && !idMatch && !serialMatch && !roomMatch) return false;
     }
     return true;
@@ -662,6 +711,12 @@ function filterAdminTable() {
 }
 
 function renderAdminTable(rows, preserveLevel, preserveRoom) {
+
+  if (adminDataTableInstance) { 
+    try { adminDataTableInstance.destroy(); } catch (e) {} 
+    adminDataTableInstance = null; 
+  }
+
   // อัปเดต dropdowns
   var levels = [], rooms = {};
   systemData.forEach(function (r) {
@@ -749,6 +804,16 @@ function renderAdminTable(rows, preserveLevel, preserveRoom) {
   if (badge)   badge.textContent = rows.length + ' รายการ';
   var countEl = document.getElementById('adminFilteredCount');
   if (countEl) countEl.textContent = rows.length;
+
+  
+  
+  adminDataTableInstance = $('#adminTable').DataTable({
+    pageLength: 20, 
+    lengthMenu: [[10, 20, 50, 100, -1], [10, 20, 50, 100, "ทั้งหมด"]], 
+    order: [], 
+    searching: false, // ปิดช่องค้นหาของ DataTables (ใช้ช่องค้นหาหลักของคุณแทน)
+    language: { url: '//cdn.datatables.net/plug-ins/1.13.4/i18n/th.json' }
+  });
 }
 
 // ==========================================
@@ -895,6 +960,14 @@ function handleFormSubmit(form) {
     Swal.fire({ icon: 'info', title: 'ไม่มีข้อมูลที่เปลี่ยนแปลง' });
     return false;
   }
+
+  var btn = document.querySelector('button[form="' + form.id + '"]');
+  var originalText = btn ? btn.innerHTML : 'บันทึกข้อมูล';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>กำลังประมวลผล...';
+  }
+
   var filesToRead = [];
   if (fa) filesToRead.push({ key: 'file_agreement_b64', file: fa });
   if (fr) filesToRead.push({ key: 'file_return_b64', file: fr });
@@ -934,23 +1007,53 @@ function handleFormSubmit(form) {
 function openAdminEdit(id, sheet) {
   var p = systemData.find(function (x) { return String(x.id) === String(id) && (x.source_sheet || '') === sheet; });
   if (!p) { showError('ไม่พบข้อมูล'); return; }
+  
   document.getElementById('adm_id').value          = p.id;
   document.getElementById('adm_name').value        = p.name;
   document.getElementById('adm_name_hidden').value = p.name;
   document.getElementById('adm_type').value        = p.type || '';
   document.getElementById('adm_room').value        = p.room || '';
-  document.getElementById('adm_serial').value      = p.serial || '-';
+  
+  // ==========================================
+  // ✅ 1. เปลี่ยนจากช่องพิมพ์เป็น Dropdown ดึงรายการ "เครื่องว่าง" อัตโนมัติ
+  // ==========================================
+  var serialSelect = document.getElementById('adm_serial');
+  serialSelect.innerHTML = '<option value="">กำลังโหลดเครื่องว่าง...</option>';
+  
+  google.script.run
+    .withSuccessHandler(function(availableSerials) {
+      var currentSerial = p.serial || '-';
+      var opts = '<option value="-">-- คืนแล้ว / ไม่มีเครื่อง (-) --</option>';
+      
+      // ถ้าเด็กมีเครื่องอยู่แล้ว (และไม่ได้อยู่ในชีตเครื่องว่าง) ให้ตั้งค่าเป็นเครื่องปัจจุบัน
+      if (currentSerial !== '-' && availableSerials.indexOf(currentSerial) < 0) {
+        opts += '<option value="' + escapeHtml(currentSerial) + '" selected>เครื่องปัจจุบัน: ' + escapeHtml(currentSerial) + '</option>';
+      }
+      
+      // วนลูปนำรายการเครื่องว่างมาเรียงต่อ
+      availableSerials.forEach(function(s) {
+        var isSelected = (s === currentSerial) ? 'selected' : '';
+        opts += '<option value="' + escapeHtml(s) + '" ' + isSelected + '>' + escapeHtml(s) + '</option>';
+      });
+      serialSelect.innerHTML = opts;
+    })
+    .getAvailableSerials();
+  // ==========================================
+
   document.getElementById('adm_borrow_status').value = p.borrowStatus || 'ยังไม่ยืม';
   document.getElementById('adm_doc_status').value    = p.docStatus || '';
   document.getElementById('adm_note').value          = p.note || '';
+  
   var files  = p.files || {};
   var mkLink = function (url, label, cls) {
     return url
       ? '<a href="' + escapeHtml(url) + '" target="_blank" class="btn btn-sm btn-outline-' + cls + ' me-1 mb-1"><i class="fas fa-file-pdf me-1"></i>' + label + '</a>'
       : '<span class="text-muted small">ไม่มีไฟล์</span>';
   };
+  
   document.getElementById('adm_file_list').innerHTML        = mkLink(files.agreement, 'สัญญาการยืม', 'primary');
   document.getElementById('adm_return_file_list').innerHTML = mkLink(p.returnDocUrl, 'หลักฐานการคืน', 'success');
+  
   $('#adminEditModal').modal('show');
 }
 
@@ -1258,6 +1361,14 @@ function handleAdvisorReturnSubmit(form) {
   };
   var fr = form.querySelector('[name="file_return"]').files[0];
   if (!fr) { Swal.fire({ icon: 'warning', title: 'กรุณาเลือกไฟล์หลักฐานการคืน' }); return false; }
+  
+  var btn = document.querySelector('button[form="' + form.id + '"]'); // <--- แก้ไขบรรทัดนี้
+  var originalText = btn ? btn.innerHTML : 'ยืนยันการคืน';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>กำลังส่งไฟล์...';
+  }
+  
   readFileAsBase64(fr, function (b64) {
     if (!b64) { Swal.fire({ icon: 'error', title: 'ไม่สามารถอ่านไฟล์ได้' }); return; }
     obj.file_return_b64 = b64;
