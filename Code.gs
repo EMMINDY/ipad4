@@ -232,9 +232,16 @@ function getAllSystemData() {
             }
           }
 
-          if ((rowAction === 'ADVISOR_RETURN' || rowAction === 'USER_RETURN') && rowNote.indexOf('[หลักฐานการคืน]:') >= 0) {
+        if ((rowAction === 'ADVISOR_RETURN' || rowAction === 'USER_RETURN') && rowNote.indexOf('[หลักฐานการคืน]:') >= 0) {
             const match = rowNote.match(/\[หลักฐานการคืน\]:\s*(https?:\/\/[^\s\n]+)/);
-            if (match) dbMap[id].returnDocUrl = match[1].trim();
+            if (match) {
+              dbMap[id].returnDocUrl = match[1].trim();
+              
+              // ✅ เพิ่มคำสั่งเปลี่ยนสถานะเอกสารเป็น "รอตรวจสอบ"
+              if (dbMap[id].docStatus === 'ยังไม่ส่ง' || !dbMap[id].docStatus) {
+                dbMap[id].docStatus = 'รอตรวจสอบ';
+              }
+            }
           }
 
           if (rowStatus.indexOf('อยู่ระหว่างการส่งคืน') >= 0) {
@@ -724,32 +731,33 @@ function adminUpdateData(data) {
       ? ("ครูที่ปรึกษา: " + data.editorName) 
       : ("ADMIN: " + (data.editorName || "ผู้ดูแลระบบ"));
     
-    if (sheetLog) {
-      if (data.borrowStatusSelect) {
-        sheetLog.appendRow([
-          timestamp, data.userId, data.userName, data.userType, data.userRoom, data.userSerial,
-          editor, data.note || "-", data.borrowStatusSelect, "", "", "", "", ""
-        ]);
-      }
-      if (data.docStatusSelect && data.docStatusSelect !== "") {
-        sheetLog.appendRow([
-          timestamp, data.userId, data.userName, data.userType, data.userRoom, data.userSerial,
-          editor + "|DOC", data.note || "-", data.docStatusSelect, "", "", "", "", ""
-        ]);
-      }
-    }
-    
     const targetSheetName = data.source_sheet; 
+    let finalSerialToSave = data.userSerial; // เตรียมตัวแปรไว้เก็บ Serial ที่จะเซฟจริง
+
     if (targetSheetName) {
       const targetSheet = ss.getSheetByName(targetSheetName);
       if (targetSheet) {
         const sheetValues  = targetSheet.getDataRange().getValues();
         const isTeacherSheet = targetSheetName === SHEET_NAMES.TEACHERS;
+        
         for (let i = 1; i < sheetValues.length; i++) {
           const rowMatches = isTeacherSheet
             ? ("T-" + String(sheetValues[i][0])) === String(data.userId)
             : String(sheetValues[i][1]) === String(data.userId);
+            
           if (rowMatches) {
+            // ==========================================
+            // ✅ ระบบจัดการเครื่องว่าง (Inventory System)
+            // ==========================================
+            const oldSerial = sheetValues[i][6]; // คอลัมน์ G (Index 6) คือ Serial เดิม
+            
+            // เรียกใช้ฟังก์ชันย้ายเครื่องว่าง (ต้องมีฟังก์ชัน processInventoryChanges อยู่ในไฟล์ด้วยนะ)
+            finalSerialToSave = processInventoryChanges(oldSerial, data.userSerial, data.borrowStatusSelect, data.userName);
+            
+            // เซฟค่า Serial ใหม่ลงไปในคอลัมน์ G (7)
+            targetSheet.getRange(i + 1, 7).setValue(finalSerialToSave);
+            // ==========================================
+
             if (data.note !== undefined) targetSheet.getRange(i + 1, 8).setValue(data.note);
             if (data.borrowStatusSelect)  targetSheet.getRange(i + 1, 11).setValue(data.borrowStatusSelect);
             if (data.docStatusSelect && data.docStatusSelect !== "") targetSheet.getRange(i + 1, 12).setValue(data.docStatusSelect);
@@ -758,6 +766,22 @@ function adminUpdateData(data) {
         }
       } else {
         throw new Error("หาแผ่นงาน '" + targetSheetName + "' ไม่เจอในไฟล์นี้");
+      }
+    }
+
+    // เซฟ Log การทำงาน (ย้ายมาไว้ด้านล่าง เพื่อให้ได้ finalSerialToSave ที่อัปเดตแล้ว)
+    if (sheetLog) {
+      if (data.borrowStatusSelect) {
+        sheetLog.appendRow([
+          timestamp, data.userId, data.userName, data.userType, data.userRoom, finalSerialToSave,
+          editor, data.note || "-", data.borrowStatusSelect, "", "", "", "", ""
+        ]);
+      }
+      if (data.docStatusSelect && data.docStatusSelect !== "") {
+        sheetLog.appendRow([
+          timestamp, data.userId, data.userName, data.userType, data.userRoom, finalSerialToSave,
+          editor + "|DOC", data.note || "-", data.docStatusSelect, "", "", "", "", ""
+        ]);
       }
     }
 
@@ -1089,4 +1113,70 @@ function deleteSyncTrigger() {
     }
   });
   Logger.log('🗑️ Sync Trigger ถูกลบแล้ว');
+}
+
+// ==========================================
+// ระบบจัดการคลังพัสดุ (Inventory System)
+// ==========================================
+
+// 1. ฟังก์ชันส่งรายชื่อเครื่องว่างให้หน้าเว็บ (อัปเดตใหม่ ป้องกัน Error ชีตว่าง)
+function getAvailableSerials() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('เครื่องว่าง');
+    
+    // ถ้าหาชีตไม่เจอ ให้คืนค่าว่าง
+    if (!sheet) return []; 
+    
+    var lastRow = sheet.getLastRow();
+    // ถ้าชีตมีแค่หัวตาราง (1 บรรทัด) หรือไม่มีข้อมูลเลย ให้คืนค่าว่าง
+    if (lastRow < 2) return []; 
+    
+    // ดึงข้อมูลตั้งแต่บรรทัดที่ 2 ถึงบรรทัดสุดท้าย คอลัมน์ที่ 1 (A)
+    var data = sheet.getRange(2, 1, lastRow - 1, 1).getValues(); 
+    var serials = [];
+    
+    for (var i = 0; i < data.length; i++) {
+      if (data[i][0] && String(data[i][0]).trim() !== "") {
+        serials.push(String(data[i][0]).trim());
+      }
+    }
+    return serials;
+  } catch (e) {
+    // ปริ้น Error ลง Logs หลังบ้านเผื่อไว้เช็ค
+    console.error("Error in getAvailableSerials: " + e.message);
+    return [];
+  }
+}
+
+// 2. ฟังก์ชันย้าย Serial ไป-มา อัตโนมัติ
+function processInventoryChanges(oldSerial, newSerial, newStatus, userName) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var emptySheet = ss.getSheetByName('เครื่องว่าง');
+  if (!emptySheet) return newSerial;
+
+  var dateStr = Utilities.formatDate(new Date(), "Asia/Bangkok", "dd/MM/yyyy HH:mm");
+
+  // กรณีที่ 1: แอดมินกด "คืนแล้ว" -> เอา Serial ไปเก็บในชีต "เครื่องว่าง"
+  if (newStatus === 'คืนแล้ว' && oldSerial && oldSerial !== '-') {
+    var emptyData = emptySheet.getRange("A:A").getValues().flat();
+    if (emptyData.indexOf(oldSerial) === -1) { 
+      // โครงสร้าง: [Serial Number, ผู้ใช้งานล่าสุด, วันที่รับคืน, สภาพเครื่อง]
+      emptySheet.appendRow([oldSerial, userName, dateStr, "ปกติ"]);
+    }
+    return '-'; // บังคับลบ Serial ออกจากชื่อเด็กเมื่อคืนแล้ว
+  }
+
+  // กรณีที่ 2: แอดมินจ่ายเครื่องใหม่ (เปลี่ยน Serial ไปจากเดิม) -> ลบเลขนั้นออกจาก "เครื่องว่าง"
+  if (newSerial !== oldSerial && newSerial !== '-') {
+    var data = emptySheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]).trim() === String(newSerial).trim()) {
+        emptySheet.deleteRow(i + 1);
+        break;
+      }
+    }
+  }
+  
+  return newSerial; // คืนค่า Serial ล่าสุดกลับไปบันทึก
 }
