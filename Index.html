@@ -46,7 +46,41 @@
       .mode-btn-text { display: none; }
     }
   </style>
+  <script>
+  // ข้อมูลแอปพลิเคชัน
+  const manifest = {
+    "name": "ระบบตรวจสอบสถานะ iPad",
+    "short_name": "เช็ค iPad",
+    "start_url": "https://script.google.com/a/macros/aran.ac.th/s/AKfycbxYmFOUQqvoaicHNwGzhSatzwwEu4IF_uJhb4s0rcjOpSQFYEwv1HKqAn_vKoFDRuDT/exec", 
+    "display": "standalone", // บังคับให้แสดงผลแบบไม่มีแถบเบราว์เซอร์
+    "background_color": "#ffffff",
+    "theme_color": "#1a73e8",
+    "icons": [
+      {
+        "src": "https://drive.google.com/file/d/1F9KWlzgtqzsWPfotOgNGsQ0cfPX2ahwX/view?usp=drive_link",
+        "sizes": "192x192",
+        "type": "image/png"
+      },
+      {
+        "src": "https://drive.google.com/file/d/1F9KWlzgtqzsWPfotOgNGsQ0cfPX2ahwX/view?usp=drive_link",
+        "sizes": "512x512",
+        "type": "image/png"
+      }
+    ]
+  };
+
+  // สร้างไฟล์ Manifest เสมือนขึ้นมาในเบราว์เซอร์
+  const stringManifest = JSON.stringify(manifest);
+  const blob = new Blob([stringManifest], {type: 'application/json'});
+  const manifestURL = URL.createObjectURL(blob);
+  document.querySelector('head').insertAdjacentHTML(
+    'beforeend',
+    `<link rel="manifest" href="${manifestURL}">`
+  );
+</script>
 </head>
+
+
 <body>
 
   <div id="initial-page-loader" style="position:fixed;top:0;left:0;width:100vw;height:100vh;background:#fff;z-index:9999;display:flex;flex-direction:column;justify-content:center;align-items:center;">
@@ -494,8 +528,7 @@
           <input type="hidden" id="adm_name_hidden">
           <input type="hidden" id="adm_type">
 
-          <!-- Info -->
-          <div class="bg-light rounded-3 p-3 mb-3">
+         <div class="bg-light rounded-3 p-3 mb-3">
             <div class="row g-2">
               <div class="col-6">
                 <label class="form-label small fw-bold text-muted">ชื่อ-นามสกุล</label>
@@ -507,7 +540,7 @@
               </div>
               <div class="col-3">
                 <label class="form-label small fw-bold text-muted">Serial</label>
-                <input type="text" id="adm_serial" class="form-control form-control-sm" readonly style="background:#fff;">
+                <select id="adm_serial" class="form-select form-select-sm border-primary" style="background:#fff;"></select>
               </div>
             </div>
           </div>
